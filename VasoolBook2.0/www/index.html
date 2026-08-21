@@ -251,6 +251,20 @@ var VBProcessing=(function(){
   }
   function run(key,text,operation,options){
     var token=begin(key,typeof text==='function'?text():text,options);if(!token)return false;
+    options=options||{};
+    // Opt-in only (options.detectSaveViaRevision): several wrapped save
+    // functions have many internal validation early-returns (bare `return;`,
+    // not `return false;`) that were never meant to signal success/failure to
+    // a caller — they only existed to short-circuit and show a toast. Without
+    // this, run() would treat every one of those as a "success" (anything
+    // other than a literal `false`), flashing a false ✓ checkmark alongside
+    // the very toast telling the user nothing was saved. Every real save in
+    // this app goes through saveState()/saveStateFast(), which unconditionally
+    // bump the shared data-revision counter first — so "the revision didn't
+    // move" is a reliable, non-invasive signal that nothing was actually
+    // persisted, without requiring every validation branch in those functions
+    // to be individually rewritten to `return false;`.
+    var revisionBefore=(options.detectSaveViaRevision&&typeof _gdCurrentDataRevision==='function')?_gdCurrentDataRevision():null;
     var result;
     try{result=operation(token);}catch(error){complete(token,'error',(error&&error.message)||'Operation failed');throw error;}
     if(result&&typeof result.then==='function'){
@@ -264,7 +278,8 @@ var VBProcessing=(function(){
         else end(token);
       });
     }
-    if(result===false)end(token);else complete(token,'success');return result;
+    var noRealChange=revisionBefore!=null&&_gdCurrentDataRevision()===revisionBefore;
+    if(result===false||noRealChange)end(token);else complete(token,'success');return result;
   }
   function wrapFunction(name,spec){
     spec=spec||{};var original=window[name];if(typeof original!=='function'||original.__vbProcessingWrapped)return false;
@@ -37811,10 +37826,10 @@ function _installGlobalProcessingIndicators(){
   window.__vbProcessingIndicatorsInstalled=true;
   var wrap=VBProcessing.wrapFunction;
   [
-    ['_proceedSaveEntry',{key:'payment-save',text:'Saving payment\u2026',delay:0,timeout:30000}],
-    ['_proceedSaveEntryNextCycle',{key:'payment-cycle-save',text:'Saving payment\u2026',delay:0,timeout:30000}],
-    ['saveBorrower',{key:'loan-save',text:function(){return typeof editingId!=='undefined'&&editingId?'Updating loan\u2026':'Saving loan\u2026';},delay:0,timeout:30000}],
-    ['saveEditPayModal',{key:'payment-edit',text:'Updating payment\u2026',delay:0,timeout:30000}],
+    ['_proceedSaveEntry',{key:'payment-save',text:'Saving payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true}],
+    ['_proceedSaveEntryNextCycle',{key:'payment-cycle-save',text:'Saving payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true}],
+    ['saveBorrower',{key:'loan-save',text:function(){return typeof editingId!=='undefined'&&editingId?'Updating loan\u2026':'Saving loan\u2026';},delay:0,timeout:30000,detectSaveViaRevision:true}],
+    ['saveEditPayModal',{key:'payment-edit',text:'Updating payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true}],
     ['saveDiscountClosure',{key:'loan-closure',text:'Closing loan\u2026',delay:0,timeout:30000}],
     ['confirmPermanentLoanClose',{key:'loan-close-confirm',text:'Closing loan\u2026',delay:0,timeout:30000}],
     ['confirmOTSNewLoan',{key:'ots-save',text:'Saving OTS\u2026',delay:0,timeout:30000}],
