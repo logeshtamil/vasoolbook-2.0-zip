@@ -27934,6 +27934,16 @@ function _collectionAndLoanSummary(fromDate,toDate,mainArea,subArea){
 function _datedAreaTxnBelongsToReport(t,reportDate,scopeAreas){
   if((t.date||'')!==reportDate) return false;
   if(!scopeAreas||!scopeAreas.length) return true;
+  // Account/Non-Account Transactions can be saved with NO area selected
+  // ("— Other / Not Specified —" — the common case for petty cash, office
+  // expenses, non-borrower entries). scopeAreas here is auto-narrowed to
+  // "areas scheduled to collect today" for borrower collection entries —
+  // a transaction with no area was never part of any area's collection
+  // round, so it must never be excluded by that scoping. Without this, a
+  // successfully-saved area-less transaction would silently vanish from
+  // every NAT list/report/share surface on any day scopeAreas is non-empty
+  // (i.e. almost every day), even though its date matches exactly.
+  if(!(t.area||t.areaId)) return true;
   return _areaMatchesReportScope(t,scopeAreas);
 }
 function _loanBelongsToReport(b,reportDate,scopeAreas){
