@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd *)",
+      "PowerShell($env:JAVA_HOME = \"C:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\"; $env:PATH = \"$env:JAVA_HOME\\\\bin;$env:PATH\"; Set-Location \"C:\\\\Vasool Book 2.0\\\\android\"; .\\\\gradlew.bat assembleDebug 2>&1)",
+      "PowerShell(Copy-Item *)",
+      "Bash(npx cap *)"
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+@echo off
+setlocal enableextensions enabledelayedexpansion
+echo Syncing www\index.html to Android asset...
+copy /Y "c:\Vasool Book 2.0\www\index.html" "c:\Vasool Book 2.0\android\app\src\main\assets\public\index.html"
+echo Sync complete. Building APK...
+cd /d "c:\Vasool Book 2.0" && build_apk_debug.cmd

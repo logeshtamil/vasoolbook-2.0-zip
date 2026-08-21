@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#1B3A6B</color>
+    <color name="colorPrimaryDark">#1B3A6B</color>
+    <color name="colorAccent">#25D366</color>
+    <color name="vb_header_navy">#1B3A6B</color>
+</resources>

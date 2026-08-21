@@ -1,0 +1,168 @@
+import groovy.json.JsonSlurper
+
+apply plugin: 'com.android.application'
+
+def localProps = new Properties()
+def localPropsFile = rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+def readGoogleServicesWebClientId = {
+    def googleServicesFile = file("google-services.json")
+    if (!googleServicesFile.exists()) {
+        return ""
+    }
+    def parsed = new JsonSlurper().parse(googleServicesFile)
+    def clients = parsed.client ?: []
+    for (def client : clients) {
+        def oauthClients = client.oauth_client ?: []
+        def webClient = oauthClients.find { it.client_type == 3 && it.client_id }
+        if (webClient) {
+            return webClient.client_id.toString().trim()
+        }
+        def otherClients = client.services?.appinvite_service?.other_platform_oauth_client ?: []
+        def otherWebClient = otherClients.find { it.client_type == 3 && it.client_id }
+        if (otherWebClient) {
+            return otherWebClient.client_id.toString().trim()
+        }
+    }
+    return ""
+}
+
+def googleWebClientId = System.getenv("GOOGLE_WEB_CLIENT_ID") ?:
+    localProps.getProperty("GOOGLE_WEB_CLIENT_ID") ?:
+    readGoogleServicesWebClientId()
+
+if (!(googleWebClientId ==~ /^[0-9A-Za-z_-]+\.apps\.googleusercontent\.com$/)) {
+    throw new GradleException("Missing GOOGLE_WEB_CLIENT_ID. Add the real Web OAuth Client ID (*.apps.googleusercontent.com) to android/local.properties or replace android/app/google-services.json with one that contains a Web OAuth client.")
+}
+
+def androidKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH") ?: localProps.getProperty("ANDROID_KEYSTORE_PATH")
+def androidKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: localProps.getProperty("ANDROID_KEYSTORE_PASSWORD")
+def androidKeystoreAlias = System.getenv("ANDROID_KEYSTORE_ALIAS") ?: localProps.getProperty("ANDROID_KEYSTORE_ALIAS")
+def androidKeystoreAliasPassword = System.getenv("ANDROID_KEYSTORE_ALIAS_PASSWORD") ?: localProps.getProperty("ANDROID_KEYSTORE_ALIAS_PASSWORD") ?: androidKeystorePassword
+def hasConfiguredSigning = androidKeystorePath && androidKeystorePassword && androidKeystoreAlias && androidKeystoreAliasPassword
+
+android {
+    namespace = "in.vasoolbook.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "in.vasoolbook.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 58
+        versionName "2.4.53"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // Injects the resolved Client ID as R.string.server_client_id (read as a fallback
+        // by @codetrix-studio/capacitor-google-auth's native Android code).
+        resValue "string", "server_client_id", googleWebClientId
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (hasConfiguredSigning) {
+            vasoolBook {
+                storeFile rootProject.file(androidKeystorePath)
+                storePassword androidKeystorePassword
+                keyAlias androidKeystoreAlias
+                keyPassword androidKeystoreAliasPassword
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (hasConfiguredSigning) {
+                signingConfig signingConfigs.vasoolBook
+            }
+        }
+        release {
+            minifyEnabled false
+            if (hasConfiguredSigning) {
+                signingConfig signingConfigs.vasoolBook
+            }
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation 'androidx.biometric:biometric:1.1.0'
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+    
+    // Import the Firebase BoM
+    implementation platform('com.google.firebase:firebase-bom:33.7.0')
+    
+    // TODO: Add the dependencies for Firebase products you want to use
+    // When using the BoM, don't specify versions in Firebase dependencies
+    implementation 'com.google.firebase:firebase-analytics'
+    
+    // Add the dependencies for any other desired Firebase products
+    // https://firebase.google.com/docs/android/setup#available-libraries
+
+    // Native Google Sign-In (used by @codetrix-studio/capacitor-google-auth).
+    // Declared explicitly rather than relying solely on the plugin's transitive
+    // dependency, so the version is visible and controllable here.
+    implementation 'com.google.android.gms:play-services-auth:21.2.0'
+}
+
+// Must be applied after the dependencies block so the Google Services plugin can
+// correctly cross-check/resolve versions against the Firebase BoM above.
+apply plugin: 'com.google.gms.google-services'
+
+apply from: 'capacitor.build.gradle'
+
+// ── Task 4: google-services.json integration check ─────────────────────────
+// Native Google Sign-In needs an Android-type OAuth client registered for this app's
+// package name + signing certificate (SHA-1/SHA-256) inside google-services.json. The
+// #1 cause of native sign-in silently failing (DEVELOPER_ERROR) is that this array is
+// still empty. This check surfaces that clearly at build time instead of at runtime.
+// See TESTING.md for how to populate it.
+tasks.register('checkGoogleServicesOAuthClient') {
+    doLast {
+        def gsFile = file('google-services.json')
+        if (!gsFile.exists()) {
+            throw new GradleException('android/app/google-services.json is missing. Download it from Firebase Project settings > Your apps and place it at android/app/google-services.json.')
+        }
+
+        def parsed = new groovy.json.JsonSlurper().parse(gsFile)
+        def clients = parsed.client ?: []
+        def appClient = clients.find { client ->
+            client?.client_info?.android_client_info?.package_name == android.defaultConfig.applicationId
+        }
+        if (appClient == null) {
+            throw new GradleException("google-services.json package mismatch. Expected package: ${android.defaultConfig.applicationId}. Download google-services.json from the Firebase Android app with this exact package name.")
+        }
+
+        def oauthClients = clients.collectMany { client -> client.oauth_client ?: [] }
+        def androidOauthClients = oauthClients.findAll { it.client_type == 1 }
+        def webOauthClients = oauthClients.findAll { it.client_type == 3 }
+        if (oauthClients.isEmpty()) {
+            throw new GradleException('google-services.json has an empty "oauth_client" array. Add this app\'s debug AND release SHA-1 + SHA-256 fingerprints in Firebase, add/select the Web OAuth client, then re-download google-services.json.')
+        } else {
+            if (androidOauthClients.isEmpty()) {
+                throw new GradleException('google-services.json has no Android OAuth client (client_type=1). Add the APK signing SHA-1 and SHA-256 to the Firebase Android app for package in.vasoolbook.app, wait for Firebase to generate the Android OAuth client, then re-download google-services.json.')
+            }
+            if (webOauthClients.isEmpty()) {
+                throw new GradleException('google-services.json has no Web OAuth client (client_type=3). Native Google Sign-In must use the Web OAuth Client ID as serverClientId/clientId. Add/select the Web OAuth client in the same Google Cloud project and re-download google-services.json.')
+            }
+        }
+    }
+}
+preBuild.dependsOn checkGoogleServicesOAuthClient
