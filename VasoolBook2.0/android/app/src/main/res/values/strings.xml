@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">VasoolBook 2.0</string>
+    <string name="title_activity_main">VasoolBook 2.0</string>
+    <string name="package_name">in.vasoolbook.app</string>
+    <string name="custom_url_scheme">in.vasoolbook.app</string>
+    <!-- server_client_id is intentionally NOT declared here. It is injected at build time
+         by android/app/build.gradle (resValue "string", "server_client_id", ...), which reads
+         GOOGLE_WEB_CLIENT_ID from the environment or local.properties. See TESTING.md. -->
+</resources>
