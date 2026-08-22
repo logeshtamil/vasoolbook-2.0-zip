@@ -49,7 +49,7 @@ const context = {
     .sort((a, b) => `${a.date}|${a.id}`.localeCompare(`${b.date}|${b.id}`))
 };
 vm.createContext(context);
-['_interestCycleId', '_interestCycleAllocationProjection', '_interestCycleAllocationForPayment', '_interestDuePeriodSummary']
+['_interestCycleId', '_previousPendingInterestCycle', '_interestCycleAllocationProjection', '_interestCycleAllocationForPayment', '_interestDuePeriodSummary']
   .forEach(name => vm.runInContext(extractFunction(name), context));
 
 const borrower = { id: 'monthly-1', isInterest: true, loanType: 'monthly_interest' };

@@ -70,6 +70,7 @@ assert.ok(!/_monthlyInterestWorkflowState/.test(implSource), '_apptNextWeekImpl 
     setTimeout,
   };
   vm.createContext(context);
+  vm.runInContext(extractFunction('_apptOptimisticRemoveCard'), context);
   vm.runInContext(extractFunction('_apptNextWeekImpl'), context);
 
   context._apptNextWeekImpl(b, 0);

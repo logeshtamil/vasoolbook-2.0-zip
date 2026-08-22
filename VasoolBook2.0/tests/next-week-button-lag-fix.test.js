@@ -78,7 +78,7 @@ function freshContext(borrower) {
     RENDER_COST_MS,
   };
   vm.createContext(context);
-  ['apptNextWeek', '_apptNextWeekImpl'].forEach(name => vm.runInContext(extractFunction(name), context));
+  ['_apptOptimisticRemoveCard', 'apptNextWeek', '_apptNextWeekImpl'].forEach(name => vm.runInContext(extractFunction(name), context));
   return context;
 }
 
