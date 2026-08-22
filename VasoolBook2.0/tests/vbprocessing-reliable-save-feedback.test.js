@@ -70,8 +70,14 @@ function extractFunction(name) {
 // ── 1. Source-level: the four named actions are wired through the reusable
 //      VBProcessing service, with the reliability flag enabled. ────────────
 const wireBlock = extractFunction('_installGlobalProcessingIndicators');
-assert.match(wireBlock, /\['_proceedSaveEntry',\{key:'payment-save',text:'Saving payment\\u2026',delay:0,timeout:30000,detectSaveViaRevision:true\}\]/, 'Payment Save (direct) is wired with reliable outcome detection');
-assert.match(wireBlock, /\['_proceedSaveEntryNextCycle',\{key:'payment-cycle-save',text:'Saving payment\\u2026',delay:0,timeout:30000,detectSaveViaRevision:true\}\]/, 'Payment Save (credit-to-next-cycle) is wired with reliable outcome detection');
+// silentSuccess:true was added after this test was first written (see
+// collection-entry-silent-success-notification.test.js) — Payment Save no
+// longer flashes the generic centered "Completed successfully" overlay, so
+// it can't block the Collection/Send Message popup that appears right
+// after. detectSaveViaRevision must still be present regardless of what
+// else is in the options object.
+assert.match(wireBlock, /\['_proceedSaveEntry',\{key:'payment-save',text:'Saving payment\\u2026',delay:0,timeout:30000,[^}]*detectSaveViaRevision:true[^}]*\}\]/, 'Payment Save (direct) is wired with reliable outcome detection');
+assert.match(wireBlock, /\['_proceedSaveEntryNextCycle',\{key:'payment-cycle-save',text:'Saving payment\\u2026',delay:0,timeout:30000,[^}]*detectSaveViaRevision:true[^}]*\}\]/, 'Payment Save (credit-to-next-cycle) is wired with reliable outcome detection');
 assert.match(wireBlock, /\['saveBorrower',\{key:'loan-save'[\s\S]*?detectSaveViaRevision:true\}\]/, 'Loan Sanction/Create/Edit/Save is wired with reliable outcome detection');
 assert.match(wireBlock, /\['saveEditPayModal',\{key:'payment-edit',text:'Updating payment\\u2026',delay:0,timeout:30000,detectSaveViaRevision:true\}\]/, 'Edit (payment edit) is wired with reliable outcome detection');
 

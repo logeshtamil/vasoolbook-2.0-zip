@@ -181,7 +181,7 @@ const clickContext = {
   Date, String, Number, Object, Array, Math, console, setTimeout, clearTimeout
 };
 vm.createContext(clickContext);
-['apptNextWeek', '_apptNextWeekImpl'].forEach(name => vm.runInContext(extractFunction(name), clickContext));
+['_apptOptimisticRemoveCard', 'apptNextWeek', '_apptNextWeekImpl'].forEach(name => vm.runInContext(extractFunction(name), clickContext));
 clickContext.apptNextWeek();
 assert.equal(clickContext.borrowers[0].ignored, true, 'Next Week click immediately enters the Closed waiting state');
 assert.equal(clickContext.borrowers[0].monthlyCycleStatus, 'next_week', 'Next Week click persists the waiting status');

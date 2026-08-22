@@ -64,7 +64,7 @@ vm.createContext(context);
   '_borrowerNextReopenAfterPayment','_borrowerNextReopenAfterPaymentLabel',
   '_borrowerOwnCollectionCycleStart','_borrowerNextWeekReopenDate',
   '_periodInterestGross','_periodInterestAccrued',
-  '_interestEntriesChrono','_applySavedInterestCyclePayment','_interestCycleAllocationProjection',
+  '_interestEntriesChrono','_applySavedInterestCyclePayment','_previousPendingInterestCycle','_interestCycleAllocationProjection',
   '_interestCycleId','_interestCycleAllocationForPayment','_topUpInterestSplit','_weeklyInterestDueState'
 ].forEach(name => vm.runInContext(extractFunction(name), context));
 

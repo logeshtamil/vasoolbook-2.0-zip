@@ -265,6 +265,17 @@ var VBProcessing=(function(){
     // persisted, without requiring every validation branch in those functions
     // to be individually rewritten to `return false;`.
     var revisionBefore=(options.detectSaveViaRevision&&typeof _gdCurrentDataRevision==='function')?_gdCurrentDataRevision():null;
+    // Opt-in only (options.silentSuccess): a handful of wrapped actions
+    // (e.g. Collection Entry save) already show their OWN success feedback
+    // right after saving — the rich Collection/Send Message popup, or a
+    // dedicated top-banner notification. The generic "✓ Completed
+    // successfully" flash held a translucent tap-blocking backdrop up for
+    // ~900ms on top of whatever appeared next, delaying the user from
+    // immediately sending the message or changing Area. With this flag, a
+    // genuine SUCCESS closes instantly and silently (still fully unlocking
+    // the UI) — a genuine FAILURE still shows the normal "✕ Failed" flash,
+    // completely unaffected by this flag.
+    var silentSuccess=!!options.silentSuccess;
     var result;
     try{result=operation(token);}catch(error){complete(token,'error',(error&&error.message)||'Operation failed');throw error;}
     if(result&&typeof result.then==='function'){
@@ -273,13 +284,16 @@ var VBProcessing=(function(){
         Promise.resolve(result).then(function(value){token.outcome=value===false?'idle':'success';resolve(value);},function(error){token.outcome='error';token.error=error;reject(error);});
       }).finally(function(){
         if(token.timedOut)return;
-        if(token.outcome==='success')complete(token,'success');
+        if(token.outcome==='success'){if(silentSuccess)end(token);else complete(token,'success');}
         else if(token.outcome==='error')complete(token,'error',(token.error&&token.error.message)||'Operation failed');
         else end(token);
       });
     }
     var noRealChange=revisionBefore!=null&&_gdCurrentDataRevision()===revisionBefore;
-    if(result===false||noRealChange)end(token);else complete(token,'success');return result;
+    if(result===false||noRealChange)end(token);
+    else if(silentSuccess)end(token);
+    else complete(token,'success');
+    return result;
   }
   function wrapFunction(name,spec){
     spec=spec||{};var original=window[name];if(typeof original!=='function'||original.__vbProcessingWrapped)return false;
@@ -11090,13 +11104,16 @@ function _weeklyPaymentDotStatuses(b,records,refDate,collectionDay,dotCount){
   refDay.setDate(refDay.getDate()-daysBack);
   var currentCycleStart=_isoDate(refDay);
   var loanStart=String(b.loandate||b.loanDate||b.originalLoanDate||'').slice(0,10);
-  var firstVisibleStart=_dateOnly(currentCycleStart);
-  firstVisibleStart.setDate(firstVisibleStart.getDate()-(count*7));
-  var allocationAnchor=loanStart||_isoDate(firstVisibleStart);
   var installment=Math.max(0,parseFloat(borrowerWeeklyPayment(b))||0);
   if(!installment)return Array(count).fill('blank');
+  var loanAmt=Math.max(0,parseFloat(b.loan||0)||0);
 
-  var seen={},paidTotal=0;
+  // Collect every genuine payment with its own date — opening-balance/top-up/
+  // zero-amount rows are excluded entirely (never occupy a slot, never count
+  // toward any week). Each kept payment is later matched to the ONE specific
+  // scheduled week its date actually settles — never derived from transaction
+  // count/order or a running cumulative total.
+  var seen={},valid=[];
   (Array.isArray(records)?records:[]).forEach(function(e,index){
     if(!e||e.isOpeningBalance||e.isOpeningPaid||e.isNpaMove||e.isTopUp||e.pay==='Top-Up')return;
     if(e.bid!=null&&String(e.bid)!==String(b.id))return;
@@ -11110,18 +11127,30 @@ function _weeklyPaymentDotStatuses(b,records,refDate,collectionDay,dotCount){
       ].join('|');
     if(seen[key])return;
     seen[key]=true;
-    paidTotal+=amount;
+    valid.push({date:paymentDate,amount:amount});
   });
 
   var statuses=[];
   for(var offset=count-1;offset>=0;offset--){
     var end=_dateOnly(currentCycleStart);end.setDate(end.getDate()-(offset*7));
     var start=_dateOnly(end);start.setDate(start.getDate()-7);
-    var startStr=_isoDate(start);
+    var startStr=_isoDate(start),endStr=_isoDate(end);
     if(loanStart&&startStr<loanStart){statuses.push('blank');continue;}
-    var completedOrdinal=Math.floor((_localCalendarOrdinal(_isoDate(end))-_localCalendarOrdinal(allocationAnchor))/7);
-    var requiredThroughCycle=Math.max(1,completedOrdinal)*installment;
-    statuses.push(paidTotal+0.001>=requiredThroughCycle?'green':'red');
+    // Due amount for THIS specific scheduled week — mirrors the same
+    // remaining-balance cap the (intentionally separate) Paid Count/Total
+    // Weeks calculation already uses, so a genuinely smaller final
+    // installment near loan payoff is never wrongly flagged red.
+    var cycleIdx=loanStart?Math.round((_localCalendarOrdinal(endStr)-_localCalendarOrdinal(loanStart))/7):(count-offset);
+    var dueAmount=loanAmt>0?Math.max(0,Math.min(installment,loanAmt-((Math.max(1,cycleIdx)-1)*installment))):installment;
+    if(dueAmount<=0){statuses.push('blank');continue;}
+    // A payment belongs to THIS week only if its date falls in (start, end]
+    // — the collection-day boundary itself belongs to the cycle it settles,
+    // the same convention already used by the app's interest-cycle allocator.
+    var paidInWeek=0;
+    for(var i=0;i<valid.length;i++){
+      if(valid[i].date>startStr&&valid[i].date<=endStr)paidInWeek+=valid[i].amount;
+    }
+    statuses.push(paidInWeek+0.001>=dueAmount?'green':'red');
   }
   return statuses;
 }
@@ -17777,7 +17806,7 @@ function smartAgentTodayReportData(query){
     else if(b&&(b.loanType==='weekly'||b.loanType==='monthly'||!b.isInterest))weeklyCollection+=today;
     var split=smartAgentEntryCashUpi(e);cashCollection+=split.cash;upiCollection+=split.upi;
   });
-  var dayNat=(typeof nonAccTxns!=='undefined'?nonAccTxns:[]).filter(function(t){return smartAgentTxnBelongsToTodayReport(t,d,scopeAreas);});
+  var dayNat=(typeof nonAccTxns!=='undefined'?nonAccTxns:[]).filter(function(t){return smartAgentTxnBelongsToTodayReport(t,d,_natReportScopeAreas(''));});
   var natCashIn=0,natCashOut=0,natAccIn=0,natAccOut=0;
   dayNat.forEach(function(t){
     if(t.type==='cash_in')natCashIn+=parseFloat(t.amount||0)||0;
@@ -23866,10 +23895,29 @@ function _lastInterestPaymentDate(b,records){
 }
 
 function getInterestDueDate(b,refDate){return getInterestCycleCalculation(b,refDate).cycleEnd;}
+// A loan's saved "Previous Interest Pending" (entered once at loan
+// creation/edit for arrears that already existed before this loan was
+// tracked here) as a synthetic "cycle 0" — same {idx,start,end,gross,paid,
+// pending} shape as every real cycle, prepended so it is always the FIRST
+// thing any unallocated ("free") payment is applied to, exactly like the
+// oldest real overdue cycle would be. Returns null when there is nothing to
+// add (₹0 or unset) so callers add exactly nothing — zero impact on the
+// vast majority of loans. Recomputed fresh from b.prevPendingInterest (the
+// saved, source-of-truth field) on every call — never mutated, never
+// persisted separately, so it can never duplicate: paying it down over time
+// is entirely a function of how much of it entryLog payments have already
+// absorbed by the time this runs, recalculated from scratch every time.
+function _previousPendingInterestCycle(b){
+  var amt=Math.max(0,parseFloat(b&&b.prevPendingInterest||0)||0);
+  if(amt<=0)return null;
+  var anchor=(b.interestCalcStart&&b.interestCalcStart>'')?b.interestCalcStart:(b.originalLoanDate||b.loandate||todayStr());
+  return {idx:0,start:anchor,end:anchor,gross:amt,paid:0,pending:0};
+}
 function _completedInterestCycles(b,refDate,records){
   var ref=refDate||todayStr();
-  var loanStart=(b.interestCalcStart&&b.interestCalcStart>'')?b.interestCalcStart:(b.originalLoanDate||b.loandate||ref);
   var out=[],idx=1,guard=0;
+  var _seed=_previousPendingInterestCycle(b);
+  if(_seed)out.push(_seed);
   while(guard<600){
     var start=_nthCycleStart(b,idx),end=_nthCycleEnd(b,idx);
     if(end>ref)break;
@@ -23973,6 +24021,8 @@ function _interestCycleAllocationProjection(b,amount,refDate,records){
   count=Math.max(count,maxExplicit);
   function build(cycleCount){
     var cycles=[];
+    var _seed=_previousPendingInterestCycle(b);
+    if(_seed)cycles.push(_seed);
     for(var idx=1;idx<=cycleCount;idx++){
       var start=_nthCycleStart(b,idx),end=_nthCycleEnd(b,idx);
       cycles.push({idx:idx,start:start,end:end,gross:_periodInterestGross(b,start,end,records),paid:0,pending:0});
@@ -27122,7 +27172,7 @@ function shareAccNatText(){
   // Re-derive values from same data sources
   var dayEntriesT=(entryLog||[]).filter(function(e){return typeof _entryBelongsToReport==='function'&&_entryBelongsToReport(e,d,scopeAreas);});
   var issuedTodayT=(borrowers||[]).filter(function(b){return typeof _loanBelongsToReport==='function'&&_loanBelongsToReport(b,d,scopeAreas);});
-  var dayNatT=(nonAccTxns||[]).filter(function(t){return typeof _datedAreaTxnBelongsToReport==='function'&&_datedAreaTxnBelongsToReport(t,d,scopeAreas);});
+  var dayNatT=(nonAccTxns||[]).filter(function(t){return typeof _datedAreaTxnBelongsToReport==='function'&&_datedAreaTxnBelongsToReport(t,d,_natReportScopeAreas(selArea));});
 
   var totalCollT=dayEntriesT.reduce(function(s,e){return s+(e.today||0);},0);
   var collAmt=dayEntriesT.filter(function(e){var b=borrowers.find(function(x){return x.id===e.bid;});return b&&!b.isInterest;}).reduce(function(s,e){return s+(e.today||0);},0);
@@ -27195,7 +27245,7 @@ async function shareAccNatPDF(){
   // Re-derive
   var dayEntriesP=(entryLog||[]).filter(function(e){return typeof _entryBelongsToReport==='function'&&_entryBelongsToReport(e,d,scopeAreas);});
   var issuedTodayP=(borrowers||[]).filter(function(b){return typeof _loanBelongsToReport==='function'&&_loanBelongsToReport(b,d,scopeAreas);});
-  var dayNatP=(nonAccTxns||[]).filter(function(t){return typeof _datedAreaTxnBelongsToReport==='function'&&_datedAreaTxnBelongsToReport(t,d,scopeAreas);});
+  var dayNatP=(nonAccTxns||[]).filter(function(t){return typeof _datedAreaTxnBelongsToReport==='function'&&_datedAreaTxnBelongsToReport(t,d,_natReportScopeAreas(selArea));});
   var totalCollP=dayEntriesP.reduce(function(s,e){return s+(e.today||0);},0);
   var totalLoanP=issuedTodayP.reduce(function(s,b){return s+(b.loan||0);},0);
   var natCI2=0,natCO2=0,natAI2=0,natAO2=0;
@@ -27934,17 +27984,21 @@ function _collectionAndLoanSummary(fromDate,toDate,mainArea,subArea){
 function _datedAreaTxnBelongsToReport(t,reportDate,scopeAreas){
   if((t.date||'')!==reportDate) return false;
   if(!scopeAreas||!scopeAreas.length) return true;
-  // Account/Non-Account Transactions can be saved with NO area selected
-  // ("— Other / Not Specified —" — the common case for petty cash, office
-  // expenses, non-borrower entries). scopeAreas here is auto-narrowed to
-  // "areas scheduled to collect today" for borrower collection entries —
-  // a transaction with no area was never part of any area's collection
-  // round, so it must never be excluded by that scoping. Without this, a
-  // successfully-saved area-less transaction would silently vanish from
-  // every NAT list/report/share surface on any day scopeAreas is non-empty
-  // (i.e. almost every day), even though its date matches exactly.
-  if(!(t.area||t.areaId)) return true;
   return _areaMatchesReportScope(t,scopeAreas);
+}
+// Account/Non-Account Transactions are plain date + optional-area cash
+// movements — they are never tied to a borrower's assigned collection-day
+// schedule the way Collection Entries and Loan Issues are. Every call site
+// that lists/exports them was passing the day-of-week _scheduledAreasForReportDate(...)
+// scope (built for THOSE reports) straight through to
+// _datedAreaTxnBelongsToReport. That silently excluded a correctly-saved
+// transaction whenever its area (or "no area" at all, e.g. every
+// Non-Borrower entry) simply wasn't scheduled to collect on that specific
+// calendar day — i.e. on most days, for any multi-area setup. The
+// transaction was always saved correctly; only the report-time filter was
+// wrong. Scope NAT transactions by the selected Area filter alone.
+function _natReportScopeAreas(selArea){
+  return (selArea&&selArea!=='All')?[selArea]:[];
 }
 function _loanBelongsToReport(b,reportDate,scopeAreas){
   if((b.loandate||'')!==reportDate) return false;
@@ -28108,7 +28162,7 @@ function renderCashSection(){
     if(e.isSplit){ cashColl+=(e.cashAmt||0); }
     else { var pm=(e.pay||'Cash').toLowerCase(); if(!ONLINE_M.some(function(m){return pm.indexOf(m)>=0;})) cashColl+=(e.today||0); }
   });
-  var dayNat2=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,d,_rptScopeAreas);});
+  var dayNat2=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,d,_natReportScopeAreas(_rptSelArea));});
   var natCI=0,natCO=0;
   dayNat2.forEach(function(t){ if(t.type==='cash_in') natCI+=(t.amount||0); if(t.type==='cash_out') natCO+=(t.amount||0); });
   var issuedToday2=borrowers.filter(function(b){ return _loanBelongsToReport(b,d,_rptScopeAreas); });
@@ -28619,7 +28673,7 @@ function renderReports(){
   });
 
   // ── NAT PAYMENT CHANNELS ─────────────────────────────────
-  var dayNat=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,rptDate,scopeAreas);});
+  var dayNat=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,rptDate,_natReportScopeAreas(selArea));});
   var natCashIn=0,natCashOut=0,natAccIn=0,natAccOut=0;
   dayNat.forEach(function(t){
     if(t.type==='cash_in')  natCashIn +=t.amount||0;
@@ -29622,7 +29676,7 @@ function renderFinalTally(){
   });
 
   // ── NAT transactions for selected date + area
-  var dayNat = (nonAccTxns||[]).filter(function(t){ return _datedAreaTxnBelongsToReport(t,d,scopeAreas); });
+  var dayNat = (nonAccTxns||[]).filter(function(t){ return _datedAreaTxnBelongsToReport(t,d,_natReportScopeAreas(selArea)); });
   var natCI=0, natCO=0, natAccIn=0, natAccOut=0;
   dayNat.forEach(function(t){
     if(t.type==='cash_in')  natCI     += (t.amount||0);
@@ -29878,7 +29932,7 @@ function _tallyProfPdfBlob(d){
   function areaOk(ar){return typeof _areaMatchesReportScope==='function'?_areaMatchesReportScope(ar||'',scopeAreas):true;}
   var dayEntries=(entryLog||[]).filter(function(e){return typeof _entryBelongsToReport==='function'?_entryBelongsToReport(e,d,scopeAreas):(e.date===d);});
   var dayLoans=(borrowers||[]).filter(function(b){return typeof _loanBelongsToReport==='function'?_loanBelongsToReport(b,d,scopeAreas):(b.loandate===d);});
-  var dayNat=(nonAccTxns||[]).filter(function(t){return typeof _datedAreaTxnBelongsToReport==='function'?_datedAreaTxnBelongsToReport(t,d,scopeAreas):(t.date===d);});
+  var dayNat=(nonAccTxns||[]).filter(function(t){return typeof _datedAreaTxnBelongsToReport==='function'?_datedAreaTxnBelongsToReport(t,d,_natReportScopeAreas(selArea)):(t.date===d);});
   var dayExp=_reportDayExpenses(d,scopeAreas,selArea);
   // Collections — OTS Balance Adj is included in recovery total, but not in cash/online channels
   var cashColl=0,onlineColl=0,totalColl=0;
@@ -30232,7 +30286,7 @@ function _buildTallyPdfLines(d){
   function areaOk(area){ return _areaMatchesReportScope(area||'',scopeAreas); }
   var dayEntries=(entryLog||[]).filter(function(e){return _entryBelongsToReport(e,d,scopeAreas);});
   var dayLoans=(borrowers||[]).filter(function(b){return _loanBelongsToReport(b,d,scopeAreas);});
-  var dayNat=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,d,scopeAreas);});
+  var dayNat=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,d,_natReportScopeAreas(selArea));});
   var dayExp=_reportDayExpenses(d,scopeAreas,selArea);
   var cashColl=0,onlineColl=0,totalColl=0;
   dayEntries.forEach(function(e){
@@ -30395,7 +30449,7 @@ function _collReportData(){
     if(e.isSplit){cashColl+=(e.cashAmt||0);upiColl+=(e.upiAmt||0);}
     else if(isOnl(e.pay)){upiColl+=amt;}else{cashColl+=amt;}
   });
-  var dayNat=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,d,scopeAreas);});
+  var dayNat=(nonAccTxns||[]).filter(function(t){return _datedAreaTxnBelongsToReport(t,d,_natReportScopeAreas(selArea));});
   var natCI=0,natCO=0,natAccIn=0,natAccOut=0;
   dayNat.forEach(function(t){
     if(t.type==='cash_in')natCI+=t.amount||0;
@@ -31072,7 +31126,7 @@ function _crAutoFill(){
     : {openBal:0,closeBal:0,expFood:0,expFuel:0,expOther:0};
   var dayNat=(nonAccTxns||[]).filter(function(t){
     return typeof _datedAreaTxnBelongsToReport==='function'
-      ? _datedAreaTxnBelongsToReport(t,dateVal,scopeAreas)
+      ? _datedAreaTxnBelongsToReport(t,dateVal,_natReportScopeAreas(areaVal))
       : (t.date||'')===dateVal;
   });
   var natAccIn=0,natAccOut=0,onlineColl=0;
@@ -31387,6 +31441,21 @@ function closeAppointmentPopup(){
 // (cleared in `finally`) blocks a duplicate tap from re-entering while the
 // previous tap's deferred render is still pending.
 var _apptNextWeekBusy=false;
+// Next Week/Next Month always moves a borrower out of whichever Borrowers
+// List tab is currently on screen. Removing its card from the DOM the
+// instant the save is confirmed — instead of waiting on the deferred full
+// renderBorrowers() below to finish rebuilding every visible card's interest
+// calculations — is what makes the borrower disappear immediately. The
+// deferred renderBorrowers() still runs right after for full correctness
+// (tab counts, section headers, sort order); this is purely a fast, optimistic
+// first paint and never replaces it.
+function _apptOptimisticRemoveCard(bid){
+  try{
+    var list=$id('borrowers-list');
+    var card=list&&list.querySelector('[data-bid="'+bid+'"]');
+    if(card&&card.parentNode)card.parentNode.removeChild(card);
+  }catch(e){}
+}
 function apptNextWeek(){
   if(_apptNextWeekBusy)return;
   var b = borrowers.find(function(x){ return x.id===_apptBid; });
@@ -31442,6 +31511,7 @@ function _apptNextWeekImpl(b,idx){
     borrowers[idx].monthlyNextWeekClickCount=0;
     if(typeof _touchRecord==='function')_touchRecord(borrowers[idx]);
     saveStateFast(); // only borrowers[] changed above — fast-path save avoids re-writing 4 unchanged stores
+    _apptOptimisticRemoveCard(b.id);
     closeAppointmentPopup();
     showToast('Moved to Closed - reopens '+nextStr);
     setTimeout(renderBorrowers,0); // deferred, unchanged full refresh — never blocks the immediate popup-close/toast feedback above
@@ -31463,6 +31533,7 @@ function _apptNextWeekImpl(b,idx){
   borrowers[idx]._closedTabDate=todayStr();
   if(typeof _touchRecord==='function')_touchRecord(borrowers[idx]);
   saveStateFast(); // only borrowers[] changed above \u2014 fast-path save avoids re-writing 4 unchanged stores
+  _apptOptimisticRemoveCard(b.id);
   closeAppointmentPopup();
   showToast((regularMonthly?'Next month: ':'\u23ED\uFE0F Next visit: ')+nextStr);
   setTimeout(renderBorrowers,0); // deferred, unchanged full refresh \u2014 never blocks the immediate popup-close/toast feedback above
@@ -31550,35 +31621,64 @@ function deleteReminder(rid){
   showToast('Reminder deleted');
 }
 
+// Reschedule: tapping the icon opens a native Date Picker/Calendar
+// immediately (input[type=date].showPicker(), with a focus+click fallback
+// for older WebViews) instead of the old text-prompt flow. Only the DATE
+// changes \u2014 the reminder's existing time-of-day is preserved exactly, and
+// nothing else about the reminder record is touched.
+var _rescheduleReminderId=null;
+function _ensureReminderDateInput(){
+  var input=document.getElementById('reminder-reschedule-date-input');
+  if(input)return input;
+  input=document.createElement('input');
+  input.type='date';
+  input.id='reminder-reschedule-date-input';
+  input.style.cssText='position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none';
+  input.addEventListener('change',_applyRescheduledReminderDate);
+  (document.body||document.documentElement).appendChild(input);
+  return input;
+}
 function editReminderDateTime(rid){
   var r = reminders.find(function(x){ return x.id===rid; });
   if(!r) return;
-  var dt = new Date(r.datetime);
-  var dateVal = _isoDate(dt);
-  var timeVal = dt.toTimeString().slice(0,5);
-  var newDateDisplay = prompt('New date (DD-Mmm-YYYY):', fmtDate(dateVal));
-  if(!newDateDisplay) return;
-  var newDate=parseDisplayDateToIso(newDateDisplay);
-  if(!newDate){showToast('Enter a valid date as DD-Mmm-YYYY');return;}
-  var newTime = prompt('New time (HH:MM):', timeVal);
-  if(!newTime) newTime = '10:00';
+  _rescheduleReminderId=rid;
+  var input=_ensureReminderDateInput();
+  var dt=new Date(r.datetime);
+  input.value=_isoDate(dt);
+  if(typeof input.showPicker==='function'){
+    try{ input.showPicker(); return; }catch(e){}
+  }
+  input.focus();
+  if(typeof input.click==='function')input.click();
+}
+function _applyRescheduledReminderDate(){
+  var input=document.getElementById('reminder-reschedule-date-input');
+  var newDate=input&&input.value;
+  var rid=_rescheduleReminderId;
+  _rescheduleReminderId=null;
+  if(!newDate||!rid)return;
   var idx = reminders.findIndex(function(x){ return x.id===rid; });
-  reminders[idx].datetime = newDate+'T'+newTime;
+  if(idx<0)return;
+  var oldDt=new Date(reminders[idx].datetime);
+  var timeVal=isNaN(oldDt.getTime())?'10:00':oldDt.toTimeString().slice(0,5);
+  reminders[idx].datetime = newDate+'T'+timeVal;
   var nd = new Date(reminders[idx].datetime);
   reminders[idx].displayDate = fmtDateWithWeekday(nd)+' '+fmtTime(nd);
   saveReminders(); renderReminderList();
-  showToast('\uD83D\uDD52 Rescheduled');
+  showToast('\uD83D\uDD52 Rescheduled to '+fmtDateWithWeekday(nd));
 }
 
-function editReminderNote(rid){
+// Call: dials the borrower's saved phone number directly from the reminder
+// card, reusing the app's existing native-dialer path (openNativeDialer)
+// which already shows a small non-blocking toast \u2014 never a crash/failure \u2014
+// when no valid phone number exists.
+function callReminderBorrower(rid){
   var r = reminders.find(function(x){ return x.id===rid; });
-  if(!r) return;
-  var newNote = prompt('Edit note:', r.note||'');
-  if(newNote===null) return;
-  var idx = reminders.findIndex(function(x){ return x.id===rid; });
-  reminders[idx].note = newNote;
-  saveReminders(); renderReminderList();
-  showToast('Note updated');
+  if(!r){ showToast('Reminder not found'); return; }
+  var b = r.bid?(borrowers||[]).find(function(x){ return x.id===r.bid; }):null;
+  var phone = (b&&b.phone) || r.phone || '';
+  if(!phone){ showToast('No phone number available for this borrower'); return; }
+  openNativeDialer(phone,false);
 }
 
 // Toggle reminder for a borrower (ON/OFF)
@@ -31699,7 +31799,7 @@ function renderReminderList(){
       +'<div style="display:flex;gap:5px;flex-shrink:0;margin-left:8px">'
       +'<button onclick="dismissReminder(\''+r.id+'\')" title="Dismiss early & restore to Active" style="background:#25D366;border:none;color:#fff;border-radius:7px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer">✔ Done</button>'
       +'<button onclick="editReminderDateTime(\''+r.id+'\')" title="Reschedule" style="background:#f0f5ff;border:1px solid #c5d5f5;color:#1B3A6B;border-radius:7px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer">🕒</button>'
-      +'<button onclick="editReminderNote(\''+r.id+'\')" title="Edit note" style="background:#f0fff6;border:1px solid #c3e6cb;color:#128C7E;border-radius:7px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer">✏️</button>'
+      +'<button onclick="callReminderBorrower(\''+r.id+'\')" title="Call" style="background:#f0fff6;border:1px solid #c3e6cb;color:#128C7E;border-radius:7px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer">📞</button>'
       +'<button onclick="deleteReminder(\''+r.id+'\')" title="Delete" style="background:#fdecea;border:1px solid #f5c6cb;color:#c0392b;border-radius:7px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer">🗑️</button>'
       +'</div></div>'
       +'<div style="font-size:11px;font-weight:700;color:'+timeColor+';margin-bottom:4px">🕒 '+dtDisplay+whenLabel+'</div>'
@@ -35643,10 +35743,17 @@ var _rptOffDayInitialized = false;
 
 // ── Pay-mode helpers ─────────────────────────────────────────
 var _RPT_ONLINE_KW=['gpay','googlepay','phonepe','paytm','online','upi','neft','bank transfer','imps','bank'];
+// Cash vs Online, from the saved transaction payment mode alone (never
+// inferred from labels/UI): Cash = the saved mode is exactly "Cash";
+// Online = everything else — GPay, PhonePe, UPI, Bank/Online, Paytm,
+// Cheque, NEFT, or any future/custom mode a keyword list would never have
+// covered. The previous keyword-whitelist approach defaulted anything NOT
+// matching a known online keyword to "cash" — the opposite of the rule —
+// so an uncovered mode (e.g. Cheque) silently miscounted as cash revenue.
 function _isOnlinePayEntry(e){
   if(e.isSplit) return (e.upiAmt||0)>0;
-  var pm=(e.pay||'Cash').toLowerCase();
-  return _RPT_ONLINE_KW.some(function(k){return pm.indexOf(k)>=0;});
+  var pm=String(e.pay||'Cash').trim().toLowerCase();
+  return pm!=='cash';
 }
 function _isOnlineLoanPay(b){
   var lpt=(b.loanPayType||b.pay||'Cash').toLowerCase();
@@ -37836,8 +37943,8 @@ function _installGlobalProcessingIndicators(){
   window.__vbProcessingIndicatorsInstalled=true;
   var wrap=VBProcessing.wrapFunction;
   [
-    ['_proceedSaveEntry',{key:'payment-save',text:'Saving payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true}],
-    ['_proceedSaveEntryNextCycle',{key:'payment-cycle-save',text:'Saving payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true}],
+    ['_proceedSaveEntry',{key:'payment-save',text:'Saving payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true,silentSuccess:true}],
+    ['_proceedSaveEntryNextCycle',{key:'payment-cycle-save',text:'Saving payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true,silentSuccess:true}],
     ['saveBorrower',{key:'loan-save',text:function(){return typeof editingId!=='undefined'&&editingId?'Updating loan\u2026':'Saving loan\u2026';},delay:0,timeout:30000,detectSaveViaRevision:true}],
     ['saveEditPayModal',{key:'payment-edit',text:'Updating payment\u2026',delay:0,timeout:30000,detectSaveViaRevision:true}],
     ['saveDiscountClosure',{key:'loan-closure',text:'Closing loan\u2026',delay:0,timeout:30000}],
